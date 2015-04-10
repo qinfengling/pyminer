@@ -1,5 +1,6 @@
 #!/usr/bin/python
 #
+# Copyright 2015 Mikeqin Fengling.Qin@gmail.com
 # Copyright 2011 Jeff Garzik
 #
 # This program is free software; you can redistribute it and/or modify
@@ -25,10 +26,11 @@ import re
 import base64
 import httplib
 import sys
+from serial import Serial
 from multiprocessing import Process
+from midstate import calculateMidstate
 
 ERR_SLEEP = 15
-MAX_NONCE = 1000000L
 
 settings = {}
 pp = pprint.PrettyPrinter(indent=4)
@@ -97,9 +99,9 @@ def wordreverse(in_buf):
 	return ''.join(out_words)
 
 class Miner:
-	def __init__(self, id):
+	def __init__(self, id, tty):
 		self.id = id
-		self.max_nonce = MAX_NONCE
+                self.ser = Serial(tty, 57600, 8, timeout=2) # 2 second
 
 	def work(self, datastr, targetstr):
 		# decode work data hex string to binary
@@ -119,41 +121,59 @@ class Miner:
 		static_hash = hashlib.sha256()
 		static_hash.update(blk_hdr)
 
-		for nonce in xrange(self.max_nonce):
+                # calculate midstate
+                midstate_bin = calculateMidstate(datastr.decode('hex')[:64])
 
-			# encode 32-bit nonce value
-			nonce_bin = struct.pack("<I", nonce)
+                # send task to Avalon nano
+                icarus_bin = midstate_bin[::-1] + '0'.rjust(40, '0').decode('hex') + datastr.decode('hex')[64:76][::-1]
+                if settings['verbose'] == 1:
+                        print 'send task:' + icarus_bin.encode('hex')
+                self.ser.flushInput()
+                self.ser.write(icarus_bin)
 
-			# hash final 4b, the nonce value
-			hash1_o = static_hash.copy()
-			hash1_o.update(nonce_bin)
-			hash1 = hash1_o.digest()
+                # read nonce back
+                rdata = self.ser.read(100)
+                if rdata.encode('hex')[0:8] == "":
+                        print time.asctime(), "No Nonce found"
+                        return (0xffffffff, None)
+                else:
+                        if settings['verbose'] == 1:
+                                print 'nonce:', rdata.encode('hex')[0:8]
 
-			# sha256 hash of sha256 hash
-			hash_o = hashlib.sha256()
-			hash_o.update(hash1)
-			hash = hash_o.digest()
+                # encode 32-bit nonce value
+                nonce = int(rdata.encode('hex')[0:8], 16)
+                nonce = bytereverse(nonce)
+                nonce_bin = struct.pack("<I", nonce)
 
-			# quick test for winning solution: high 32 bits zero?
-			if hash[-4:] != '\0\0\0\0':
-				continue
+                # hash final 4b, the nonce value
+                hash1_o = static_hash.copy()
+                hash1_o.update(nonce_bin)
+                hash1 = hash1_o.digest()
 
-			# convert binary hash to 256-bit Python long
-			hash = bufreverse(hash)
-			hash = wordreverse(hash)
+                # sha256 hash of sha256 hash
+                hash_o = hashlib.sha256()
+                hash_o.update(hash1)
+                hash = hash_o.digest()
 
-			hash_str = hash.encode('hex')
-			l = long(hash_str, 16)
+                # quick test for winning solution: high 32 bits zero?
+                if hash[-4:] != '\0\0\0\0':
+                        print time.asctime(), "Invalid Nonce"
+                        return (0xffffffff, None)
 
-			# proof-of-work test:  hash < target
-			if l < target:
-				print time.asctime(), "PROOF-OF-WORK found: %064x" % (l,)
-				return (nonce + 1, nonce_bin)
-			else:
-				print time.asctime(), "PROOF-OF-WORK false positive %064x" % (l,)
-#				return (nonce + 1, nonce_bin)
+                # convert binary hash to 256-bit Python long
+                hash = bufreverse(hash)
+                hash = wordreverse(hash)
 
-		return (nonce + 1, None)
+                hash_str = hash.encode('hex')
+                l = long(hash_str, 16)
+
+                # proof-of-work test:  hash < target
+                if l < target:
+                        print time.asctime(), "PROOF-OF-WORK found: %064x" % (l,)
+                        return (0xffffffff, nonce_bin)
+                else:
+                        print time.asctime(), "PROOF-OF-WORK false positive %064x" % (l,)
+		return (0xffffffff, None)
 
 	def submit_work(self, rpc, original_data, nonce_bin):
 		nonce_bin = bufreverse(nonce_bin)
@@ -174,21 +194,16 @@ class Miner:
 
 		time_start = time.time()
 
-		(hashes_done, nonce_bin) = self.work(work['data'],
-						     work['target'])
+                (hashes_done, nonce_bin) = self.work(work['data'],
+                                                      work['target'])
 
 		time_end = time.time()
 		time_diff = time_end - time_start
 
-		self.max_nonce = long(
-			(hashes_done * settings['scantime']) / time_diff)
-		if self.max_nonce > 0xfffffffaL:
-			self.max_nonce = 0xfffffffaL
-
 		if settings['hashmeter']:
-			print "HashMeter(%d): %d hashes, %.2f Khash/sec" % (
-			      self.id, hashes_done,
-			      (hashes_done / 1000.0) / time_diff)
+			print "HashMeter(%d): %d hashes, %.2f Ghash/sec" % (
+			      self.id, 0xffffffff,
+			      (0xffffffff / 1000000000.0) / time_diff)
 
 		if nonce_bin is not None:
 			self.submit_work(rpc, work['data'], nonce_bin)
@@ -202,8 +217,8 @@ class Miner:
 		while True:
 			self.iterate(rpc)
 
-def miner_thread(id):
-	miner = Miner(id)
+def miner_thread(id, tty):
+	miner = Miner(id, tty)
 	miner.loop()
 
 if __name__ == '__main__':
@@ -235,18 +250,24 @@ if __name__ == '__main__':
 		settings['hashmeter'] = 0
 	if 'scantime' not in settings:
 		settings['scantime'] = 30L
+        if 'tty' not in settings:
+                settings['tty'] = '/dev/ttyACM0'
 	if 'rpcuser' not in settings or 'rpcpass' not in settings:
 		print "Missing username and/or password in cfg file"
 		sys.exit(1)
+        if 'verbose' not in settings:
+                settings['verbose'] = 0
 
 	settings['port'] = int(settings['port'])
-	settings['threads'] = int(settings['threads'])
+        # TODO: Support multithread
+	settings['threads'] = 1;
 	settings['hashmeter'] = int(settings['hashmeter'])
 	settings['scantime'] = long(settings['scantime'])
+        settings['verbose'] = int(settings['verbose'])
 
 	thr_list = []
 	for thr_id in range(settings['threads']):
-		p = Process(target=miner_thread, args=(thr_id,))
+		p = Process(target=miner_thread, args=(thr_id, settings['tty']))
 		p.start()
 		thr_list.append(p)
 		time.sleep(1)			# stagger threads
