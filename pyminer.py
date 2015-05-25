@@ -230,13 +230,14 @@ class Miner:
 			print time.asctime(), "No Nonce found"
 			return (0xffffffff, None)
 		else:
-			print 'nonce:', binascii.hexlify(rdata)
 			if settings['verbose'] == 1:
 				print 'nonce:', binascii.hexlify(rdata)[(DATA_OFFSET + 8) << 1:(DATA_OFFSET + 12) << 1]
 
 		# encode 32-bit nonce value
 		nonce = (rdata[DATA_OFFSET + 8] << 24) | (rdata[DATA_OFFSET + 9] << 16) | (rdata[DATA_OFFSET + 10] << 8) | rdata[DATA_OFFSET + 11]
 		nonce = nonce - 0x4000
+		if settings['verbose'] == 1:
+			print 'nonce:', hex(nonce)
 		nonce = bytereverse(nonce)
 		nonce_bin = struct.pack("<I", nonce)
 
@@ -265,6 +266,7 @@ class Miner:
 		# proof-of-work test:  hash < target
 		if l < target:
 			print time.asctime(), "PROOF-OF-WORK found: %064x" % (l,)
+			print "a3218data:", (midstate_bin[::-1] + datastr.decode('hex')[64:76][::-1] + nonce_bin).encode('hex')
 			return (0xffffffff, nonce_bin)
 		else:
 			print time.asctime(), "PROOF-OF-WORK false positive %064x" % (l,)
