@@ -265,7 +265,7 @@ class Miner:
 		# proof-of-work test:  hash < target
 		if l < target:
 			print time.asctime(), "PROOF-OF-WORK found: %064x" % (l,)
-			print "a3218data:", (midstate_bin[::-1] + datastr.decode('hex')[64:76][::-1] + nonce_bin).encode('hex')
+			print "a3218data:%064x%064x%s" % (l, target,(nonce_bin + midstate_bin[::-1] + datastr.decode('hex')[64:76][::-1]).encode('hex'))
 			return (0xffffffff, nonce_bin)
 		else:
 			print time.asctime(), "PROOF-OF-WORK false positive %064x" % (l,)
