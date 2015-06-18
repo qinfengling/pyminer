@@ -31,6 +31,7 @@ import usb.util
 import binascii
 from multiprocessing import Process
 from midstate import calculateMidstate
+from urllib2 import urlopen
 
 ERR_SLEEP = 15
 
@@ -83,6 +84,24 @@ class BitcoinRPC:
 		return self.rpc('getblockcount')
 	def getwork(self, data=None):
 		return self.rpc('getwork', data)
+	def getblock(self, height):
+		try:
+			request = urlopen('https://blockchain.info/block-height/%d?format=json' % (height,))
+		except:
+			print "getblock %d Failed!" % (height,)
+			return None
+
+		data = str(request.read())
+		rawdata = json.loads(data)
+		block = rawdata['blocks'][0]
+		ver = str(block['ver']).rjust(8, '0')
+		prev_hash = bufreverse(block['prev_block'].decode('hex')[::-1]).encode('hex')
+		merkle_root = bufreverse(block['mrkl_root'].decode('hex')[::-1]).encode('hex')
+		time = hex(block['time'])[2:]
+		bits = hex(block['bits'])[2:]
+		target = hex((block['bits'] & 0xffffff) * 2 ** (8 * ((block['bits'] >> 24) - 3)))[2:].rjust(65, '0')[0:-1].decode('hex')[::-1].encode('hex')
+
+		return { "data": ver + prev_hash + merkle_root + time + bits + '00000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000', "target": target }
 
 def uint32(x):
 	return x & 0xffffffffL
@@ -112,6 +131,7 @@ class Miner:
 	def __init__(self, id, vendor_id, product_id):
 		self.id = id
                 self.usbdev, self.endpin, self.endpout = self.enum_usbdev(vendor_id, product_id)
+		self.block = None
 
 	def enum_usbdev(self, vendor_id, product_id):
 		# Find device
@@ -296,11 +316,16 @@ class Miner:
 		return data
 
 	def iterate(self, rpc):
-		work = rpc.getwork()
-		if work is None:
+		if settings['height'] != None:
+			if self.block == None:
+				self.block = rpc.getblock(settings['height'])
+		else:
+			self.block = rpc.getwork()
+
+		if self.block is None:
 			time.sleep(ERR_SLEEP)
 			return
-		if 'data' not in work or 'target' not in work:
+		if 'data' not in self.block or 'target' not in self.block:
 			time.sleep(ERR_SLEEP)
 			return
 
@@ -308,12 +333,12 @@ class Miner:
 
 		if settings['rolling']:
 			while True:
-			    work['data'] = self.rolling_work(work['data'])
-			    (hashes_done, nonce_bin) = self.work(work['data'],
-								work['target'])
+				(hashes_done, nonce_bin) = self.work(self.block['data'],
+						self.block['target'])
+				self.block['data'] = self.rolling_work(self.block['data'])
 
-                (hashes_done, nonce_bin) = self.work(work['data'],
-                                                      work['target'])
+                (hashes_done, nonce_bin) = self.work(self.block['data'],
+                                                      self.block['target'])
 
 		time_end = time.time()
 		time_diff = time_end - time_start
@@ -323,8 +348,8 @@ class Miner:
 			      self.id, 0xffffffff,
 			      (0xffffffff / 1000000000.0) / time_diff)
 
-		if nonce_bin is not None:
-			self.submit_work(rpc, work['data'], nonce_bin)
+		if nonce_bin is not None and settings['height'] is None:
+			self.submit_work(rpc, self.block['data'], nonce_bin)
 
 	def loop(self):
 		rpc = BitcoinRPC(settings['host'], settings['port'],
@@ -377,6 +402,10 @@ if __name__ == '__main__':
                 settings['verbose'] = 0
 	if 'rolling' not in settings:
 		settings['rolling'] = 0
+	if 'height' not in settings:
+		settings['height'] = None
+	else:
+		settings['height'] = long(settings['height'])
 
 	settings['port'] = int(settings['port'])
         # TODO: Support multithread
